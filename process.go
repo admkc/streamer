@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+
+	"github.com/sirupsen/logrus"
 )
 
 // IProcess is an interface around the FFMPEG process
@@ -23,9 +26,11 @@ type ProcessLoggingOpts struct {
 
 // Process is the main type for creating new processes
 type Process struct {
-	keepFiles   bool
-	audio       bool
-	loggingOpts ProcessLoggingOpts
+	keepFiles      bool
+	audio          bool
+	live           bool
+	streamDuration int
+	loggingOpts    ProcessLoggingOpts
 }
 
 // Type check
@@ -35,9 +40,11 @@ var _ IProcess = (*Process)(nil)
 func NewProcess(
 	keepFiles bool,
 	audio bool,
+	live bool,
+	streamDuration int,
 	loggingOpts ProcessLoggingOpts,
 ) *Process {
-	return &Process{audio, keepFiles, loggingOpts}
+	return &Process{keepFiles, audio, live, streamDuration, loggingOpts}
 }
 
 // getHLSFlags are for getting the flags based on the config context
@@ -53,38 +60,54 @@ func (p Process) Spawn(path, URI string) *exec.Cmd {
 	os.MkdirAll(path, os.ModePerm)
 	processCommands := []string{
 		"-y",
-		"-fflags",
-		"nobuffer",
 		"-rtsp_transport",
 		"tcp",
 		"-i",
 		URI,
-		"-vsync",
-		"0",
-		"-copyts",
-		"-vcodec",
-		"copy",
-		"-movflags",
-		"frag_keyframe+empty_moov",
+		"-c:v",
+		"libx264",
+		"-x264opts",
+		"keyint=30:no-scenecut",
+		"-preset",
+		"veryfast",
 	}
 	if p.audio {
+		processCommands = append(processCommands, "-c:a", "copy")
+	} else {
 		processCommands = append(processCommands, "-an")
 	}
+	if p.streamDuration > 0 {
+		processCommands = append(processCommands, "-t", strconv.Itoa(p.streamDuration))
+	}
 	processCommands = append(processCommands,
-		"-hls_flags",
-		p.getHLSFlags(),
 		"-f",
 		"hls",
-		"-segment_list_flags",
-		"live",
-		"-hls_time",
-		"1",
-		"-hls_list_size",
-		"3",
+	)
+	if p.live {
+		processCommands = append(processCommands,
+			"-hls_flags",
+			p.getHLSFlags(),
+			"-segment_list_flags",
+			"live",
+			"-hls_time",
+			"1",
+			"-hls_list_size",
+			"3",
+		)
+	} else {
+		processCommands = append(processCommands,
+			"-hls_list_size",
+			"0",
+			"-hls_time",
+			"5",
+		)
+	}
+	processCommands = append(processCommands,
 		"-hls_segment_filename",
 		fmt.Sprintf("%s/%%d.ts", path),
 		fmt.Sprintf("%s/index.m3u8", path),
 	)
+	logrus.Debugf("ffmpeg params: %s", processCommands)
 	cmd := exec.Command("ffmpeg", processCommands...)
 	return cmd
 }
